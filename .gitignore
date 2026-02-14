@@ -1,0 +1,30 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+a
+.idea/
+
+# Generated model files
+*.pkl
+
+# Generated submission files
+submission_complete.csv
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pytest
+.pytest_cache/
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
