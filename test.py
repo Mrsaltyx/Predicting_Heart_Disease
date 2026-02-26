@@ -1,118 +1,116 @@
-import os
-from pathlib import Path
+# =========================================================
+# 1. IMPORTS
+# =========================================================
 import numpy as np
 import pandas as pd
-import joblib
-from sklearn.model_selection import train_test_split
-from sklearn.compose import ColumnTransformer
-from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.ensemble import RandomForestClassifier
+import warnings
 
-# --- CONFIGURATION DES CHEMINS ---
-DATA_DIR = Path(__file__).resolve().parent
-TRAIN_PATH = DATA_DIR / "train.csv"
-TEST_PATH = DATA_DIR / "test.csv"
-SAMPLE_SUB_PATH = DATA_DIR / "sample_submission.csv"
+# Sklearn pour la validation et les métriques
+from sklearn.model_selection import StratifiedKFold, KFold
+from sklearn.metrics import roc_auc_score, accuracy_score  # À adapter selon la métrique
 
+# Modèles classiques
+from lightgbm import LGBMClassifier
+from xgboost import XGBClassifier
+from catboost import CatBoostClassifier
 
-def build_preprocessor(num_cols, bin_cols, cat_cols):
-    """Pipeline de transformation des données."""
-    return ColumnTransformer(
-        transformers=[
-            ("scale", StandardScaler(), num_cols + bin_cols),
-            ("ohe", OneHotEncoder(handle_unknown="ignore", sparse_output=False), cat_cols),
-        ],
-        remainder="drop",
-    )
+# =========================================================
+# 2. CONFIGURATION GLOBALE
+# =========================================================
+warnings.filterwarnings("ignore")
+SEED = 42
+N_FOLDS = 5
+TARGET = "Heart Disease"
 
+# =========================================================
+# 3. CHARGEMENT DES DONNÉES
+# =========================================================
+# TODO: Charger les CSV
+train = pd.read_csv("train.csv")
+test = pd.read_csv("test.csv")
 
-def add_cluster_features(X_scaled, kmeans_model, cluster_encoder=None):
-    """Ajoute les clusters comme nouvelles variables explicatives."""
-    cluster_labels = kmeans_model.predict(X_scaled).reshape(-1, 1)
-
-    if cluster_encoder is None:
-        cluster_encoder = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
-        cluster_oh = cluster_encoder.fit_transform(cluster_labels)
-        return np.hstack([X_scaled, cluster_oh]), cluster_encoder
-    else:
-        cluster_oh = cluster_encoder.transform(cluster_labels)
-        return np.hstack([X_scaled, cluster_oh]), cluster_encoder
+train[TARGET] = train[TARGET].map({"Absence": 0, "Presence": 1})
+# Séparation Features (X) / Target (y)
+X = train.drop(columns=[TARGET, "id"])  # On enlève l'ID et la cible
+y = train[TARGET]
+X_test = test.drop(columns=["id"])
+test_ids = test["id"]
 
 
-def main():
-    # 1. Chargement
-    if not all(p.exists() for p in [TRAIN_PATH, TEST_PATH, SAMPLE_SUB_PATH]):
-        print("Erreur : Fichiers CSV manquants.")
-        return
+# =========================================================
+# 4. FEATURE ENGINEERING (Ingénierie des caractéristiques)
+# =========================================================
+def create_features(df):
+    df_out = df.copy()
+    # Défi 1 : La différence avec le max théorique (220 - Age)
+    df_out["HR_diff"] = (220 - df_out["Age"]) - df_out["Max HR"]
 
-    train_df = pd.read_csv(TRAIN_PATH)
-    test_df = pd.read_csv(TEST_PATH)
-    sample_sub = pd.read_csv(SAMPLE_SUB_PATH)
+    # Défi 2 : Le ratio Tension / Âge
+    df_out["BP_Age_ratio"] = df_out["BP"] / df_out["Age"]
 
-    # 2. Préparation des labels (Conversion Absence/Presence -> 0/1)
-    # On le fait avant le split pour que y soit numérique
-    target_col = "Heart Disease"
-    label_mapping = {"Absence": 0, "Presence": 1}
+    df_out["High_Risk_Blood"] = df_out["Max HR"] / df_out["Age"]
 
-    X = train_df.drop(columns=["id", target_col])
-    # On map la cible : indispensable pour de nombreux algorithmes
-    y = train_df[target_col].map(label_mapping)
+    df_out["High_Risk_Blood"] = ((df_out["Cholesterol"] > 240) & (df_out["BP"] > 130)).astype(int)
 
-    # Définition des colonnes
-    num_cols = ["Age", "BP", "Cholesterol", "Max HR", "ST depression", "Number of vessels fluro"]
-    bin_cols = ["Sex", "FBS over 120", "Exercise angina"]
-    cat_cols = ["Chest pain type", "EKG results", "Slope of ST", "Thallium"]
-
-    # 3. Split
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
-
-    # 4. Preprocessing & Clustering
-    preprocessor = build_preprocessor(num_cols, bin_cols, cat_cols)
-    X_train_scaled = preprocessor.fit_transform(X_train)
-    X_val_scaled = preprocessor.transform(X_val)
-    X_test_scaled = preprocessor.transform(test_df.drop(columns=["id"]))
-
-    kmeans = KMeans(n_clusters=7, n_init=10, random_state=42)
-    kmeans.fit(X_train_scaled)
-
-    # 5. Augmentation des features
-    X_train_aug, cluster_enc = add_cluster_features(X_train_scaled, kmeans)
-    X_val_aug, _ = add_cluster_features(X_val_scaled, kmeans, cluster_enc)
-    X_test_aug, _ = add_cluster_features(X_test_scaled, kmeans, cluster_enc)
-
-    # 6. Entraînement
-    print(f"Entraînement sur {X_train_aug.shape[1]} features (numérique)...")
-    model = RandomForestClassifier(n_estimators=250, max_depth=12, random_state=42)
-    model.fit(X_train_aug, y_train)
-
-    # 7. Évaluation
-    print(f"Score de validation : {model.score(X_val_aug, y_val):.4f}")
-
-    # 8. Inférence et Soumission
-    test_preds = model.predict(X_test_aug)  # Ce sont déjà des 0 et 1 ici
-
-    results_df = pd.DataFrame({
-        "id": test_df["id"],
-        "preds": test_preds
-    })
-
-    # Fusion avec le format imposé par sample_submission
-    final_submission = sample_sub.drop(columns=[target_col]).merge(results_df, on="id")
-    final_submission.rename(columns={"preds": target_col}, inplace=True)
-
-    # Sauvegarde
-    final_submission.to_csv(DATA_DIR / "submission_complete.csv", index=False)
-    print("Fichier 'submission_complete.csv' généré avec succès (format 0/1).")
-
-    # 9. Export des modèles
-    joblib.dump(preprocessor, DATA_DIR / "preprocessor.pkl")
-    joblib.dump(kmeans, DATA_DIR / "kmeans.pkl")
-    joblib.dump(cluster_enc, DATA_DIR / "cluster_encoder.pkl")
-    joblib.dump(model, DATA_DIR / "final_model.pkl")
+    return df_out
 
 
-if __name__ == "__main__":
-    main()
+X = create_features(X)
+X_test = create_features(X_test)
+
+# =========================================================
+# 5. STRATÉGIE DE VALIDATION (Cross-Validation)
+# =========================================================
+# StratifiedKFold préserve la proportion des classes dans chaque fold
+cv = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
+
+# Tableaux pour stocker les prédictions
+oof_preds = np.zeros(len(X))  # Prédictions sur le train (Out-Of-Fold)
+test_preds = np.zeros(len(X_test))  # Prédictions sur le test
+
+# =========================================================
+# 6. BOUCLE D'ENTRAÎNEMENT ET ÉVALUATION
+# =========================================================
+for fold, (train_idx, val_idx) in enumerate(cv.split(X, y)):
+    print(f"--- Fold {fold + 1}/{N_FOLDS} ---")
+
+    # Séparation Train / Validation pour ce fold
+    X_train_fold, y_train_fold = X.iloc[train_idx], y.iloc[train_idx]
+    X_val_fold, y_val_fold = X.iloc[val_idx], y.iloc[val_idx]
+
+    # TODO: C'est ICI qu'il faut faire du Target Encoding si tu en as besoin,
+    # en apprenant sur X_train_fold et en appliquant sur X_val_fold et X_test.
+
+    # Initialisation du modèle (Exemple avec LightGBM)
+    model = LGBMClassifier(random_state=SEED, n_estimators=500)
+
+    # Entraînement
+    model.fit(X_train_fold, y_train_fold)
+
+    # Prédiction sur le fold de validation
+    # On utilise predict_proba()[:, 1] pour avoir la probabilité de la classe 1
+    val_preds = model.predict_proba(X_val_fold)[:, 1]
+    oof_preds[val_idx] = val_preds
+
+    # Évaluation du fold
+    fold_score = roc_auc_score(y_val_fold, val_preds)
+    print(f"Score AUC du fold: {fold_score:.4f}\n")
+
+    # TODO: Prédiction sur le jeu de test X_test
+    # Comment vas-tu accumuler les prédictions du test à chaque fold ?
+    test_preds += model.predict_proba(X_test)[:, 1] / N_FOLDS
+
+# Score global sur tout le jeu d'entraînement
+print(f"=== SCORE CV FINAL (OOF) : {roc_auc_score(y, oof_preds):.4f} ===")
+
+# =========================================================
+# 7. SÉRIALISATION / SOUMISSION
+# =========================================================
+submission = pd.DataFrame({
+    "id": test_ids,
+
+    TARGET: test_preds
+})
+
+submission.to_csv("submission.csv", index=False)
+print("Fichier de soumission créé avec succès !")
