@@ -42,4 +42,3 @@ L'élément différenciateur de ce projet est l'utilisation d'Optuna à deux niv
 
     Tester des techniques d'encodage avancées (Target Encoding) pour les variables catégorielles.
 
-    <img width="2008" height="115" alt="image" src="https://github.com/user-attachments/assets/e72498ed-f26e-4dd3-9039-b3d69fb3e1a9" />
